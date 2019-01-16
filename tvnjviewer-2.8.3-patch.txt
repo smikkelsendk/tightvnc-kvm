@@ -1,0 +1,154 @@
+### Eclipse Workspace Patch 1.0
+#P tvnjviewer-2.8.3
+Index: src/com/glavsoft/viewer/swing/MouseEventListener.java
+===================================================================
+--- tvnjviewer-2.8.3/src/com/glavsoft/viewer/swing/MouseEventListener.java	(revision 1299)
++++ tvnjviewer-2.8.3/src/com/glavsoft/viewer/swing/MouseEventListener.java	(working copy)
+@@ -50,6 +50,39 @@
+ 		this.repaintController = repaintController;
+ 		this.protocol = protocol;
+ 		this.scaleFactor = scaleFactor;
++		new Thread() {
++			@Override
++			public void run() {
++				while (true) {
++					if (latestDrag != null && lastSendDrag != latestDrag) {
++						lastSendDrag = latestDrag;
++						processMouseEvent(lastSendDrag, null, false);
++					}
++					try {
++						Thread.sleep(10);
++					} catch (InterruptedException e) {
++					}
++				}
++			}
++
++		}.start();
++
++		new Thread() {
++			@Override
++			public void run() {
++				while (true) {
++					if (latestMov != null && lastSendMov != latestMov) {
++						lastSendMov = latestMov;
++						processMouseEvent(lastSendMov, null, false);
++					}
++					try {
++						Thread.sleep(10);
++					} catch (InterruptedException e) {
++					}
++				}
++			}
++
++		}.start();
+ 	}
+ 
+ 	public void processMouseEvent(MouseEvent mouseEvent,
+@@ -101,14 +134,20 @@
+ 		processMouseEvent(mouseEvent, null, false);
+ 	}
+ 
++	MouseEvent lastSendMov = null;
++	MouseEvent latestMov = null;
++	MouseEvent lastSendDrag = null;
++	MouseEvent latestDrag = null;
++
+ 	@Override
+ 	public void mouseDragged(MouseEvent mouseEvent) {
+-		processMouseEvent(mouseEvent, null, true);
++		latestDrag = mouseEvent;
++
+ 	}
+ 
+ 	@Override
+ 	public void mouseMoved(MouseEvent mouseEvent) {
+-		processMouseEvent(mouseEvent, null, true);
++		latestMov = mouseEvent;
+ 	}
+ 
+ 	@Override
+Index: src/com/glavsoft/rfb/client/FramebufferUpdateRequestMessage.java
+===================================================================
+--- tvnjviewer-2.8.3/src/com/glavsoft/rfb/client/FramebufferUpdateRequestMessage.java	(revision 1299)
++++ tvnjviewer-2.8.3/src/com/glavsoft/rfb/client/FramebufferUpdateRequestMessage.java	(working copy)
+@@ -33,14 +33,16 @@
+ 	private final int width;
+ 	private final int y;
+ 	private final int x;
+-
++	public boolean forced;
++	
+ 	public FramebufferUpdateRequestMessage(int x, int y, int width,
+-			int height, boolean incremental) {
++			int height, boolean incremental, boolean forced) {
+ 		this.x = x;
+ 		this.y = y;
+ 		this.width = width;
+ 		this.height = height;
+ 		this.incremental = incremental;
++		this.forced = forced;
+ 	}
+ 
+ 	@Override
+Index: src/com/glavsoft/rfb/protocol/Protocol.java
+===================================================================
+--- tvnjviewer-2.8.3/src/com/glavsoft/rfb/protocol/Protocol.java	(revision 1299)
++++ tvnjviewer-2.8.3/src/com/glavsoft/rfb/protocol/Protocol.java	(working copy)
+@@ -105,7 +105,6 @@
+ 		context.settings.addListener(Protocol.this); // to support pixel format (color depth), and encodings changes
+ 		context.settings.addListener(repaintController);
+ 
+-		sendRefreshMessage();
+         senderTask = new SenderTask(messageQueue, context.transport, Protocol.this);
+         senderThread = new Thread(senderTask, "RfbSenderTask");
+         senderThread.start();
+@@ -145,7 +144,12 @@
+     }
+ 
+     public void sendMessage(ClientToServerMessage message) {
+-		messageQueue.put(message);
++    	if (message instanceof FramebufferUpdateRequestMessage) {
++            if (!((FramebufferUpdateRequestMessage) message).forced) {
++                return;
++            }
++        }
++        messageQueue.put(message);
+ 	}
+ 
+     public void sendSupportedEncodingsMessage(ProtocolSettings settings) {
+@@ -242,7 +246,7 @@
+ 	}
+ 
+ 	public void sendRefreshMessage() {
+-		sendMessage(new FramebufferUpdateRequestMessage(0, 0, context.fbWidth, context.fbHeight, false));
++		sendMessage(new FramebufferUpdateRequestMessage(0, 0, context.fbWidth, context.fbHeight, false, true));
+ 		logger.fine("sent: full FB Refresh");
+ 	}
+ 
+Index: src/com/glavsoft/rfb/protocol/ReceiverTask.java
+===================================================================
+--- tvnjviewer-2.8.3/src/com/glavsoft/rfb/protocol/ReceiverTask.java	(revision 1299)
++++ tvnjviewer-2.8.3/src/com/glavsoft/rfb/protocol/ReceiverTask.java	(working copy)
+@@ -71,7 +71,7 @@
+         renderer = repaintController.createRenderer(transport, protocol.getFbWidth(), protocol.getFbHeight(),
+                 protocol.getPixelFormat());
+ 		fullscreenFbUpdateIncrementalRequest =
+-			new FramebufferUpdateRequestMessage(0, 0, protocol.getFbWidth(), protocol.getFbHeight(), true);
++			new FramebufferUpdateRequestMessage(0, 0, protocol.getFbWidth(), protocol.getFbHeight(), true, false);
+ 	}
+ 
+ 	@Override
+@@ -165,11 +165,11 @@
+                 } else if (rect.getEncodingType() == EncodingType.DESKTOP_SIZE) {
+                     synchronized (this) {
+                         fullscreenFbUpdateIncrementalRequest =
+-                            new FramebufferUpdateRequestMessage(0, 0, rect.width, rect.height, true);
++                            new FramebufferUpdateRequestMessage(0, 0, rect.width, rect.height, true, false);
+                     }
+                     renderer = repaintController.createRenderer(transport, rect.width, rect.height,
+                             protocol.getPixelFormat());
+-                    protocol.sendMessage(new FramebufferUpdateRequestMessage(0, 0, rect.width, rect.height, false));
++                    protocol.sendMessage(new FramebufferUpdateRequestMessage(0, 0, rect.width, rect.height, false, true));
+                     return;
+                 } else {
+                     repaintController.repaintBitmap(rect);
